@@ -17,11 +17,11 @@ public class TestThemerrLocalizationManager
     public static IEnumerable<object[]> CultureResourceData =>
         Directory
             .EnumerateFiles(GetLocaleDirectory(), "*.json")
-            .Select(path => Path.GetFileName(path)!)
+            .Select(path => Path.GetFileName(path))
             .OrderBy(resource => resource, StringComparer.OrdinalIgnoreCase)
             .Select(resource => new object[]
             {
-                Path.GetFileNameWithoutExtension(resource)!.Replace("_", "-", StringComparison.Ordinal),
+                Path.GetFileNameWithoutExtension(resource).Replace("_", "-", StringComparison.Ordinal),
                 resource,
             });
 

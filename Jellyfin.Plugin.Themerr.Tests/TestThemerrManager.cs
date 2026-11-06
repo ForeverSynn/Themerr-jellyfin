@@ -569,7 +569,7 @@ public class TestThemerrManager
 
         // check if the file is an actual mp3
         // https://en.wikipedia.org/wiki/List_of_file_signatures
-        var fileBytes = await File.ReadAllBytesAsync(destinationFile);
+        var fileBytes = await File.ReadAllBytesAsync(destinationFile, TestContext.Current.CancellationToken);
         var fileBytesHex = BitConverter.ToString(fileBytes);
 
         // make sure the file is not WebM, starts with `1A 45 DF A3`
@@ -654,7 +654,7 @@ public class TestThemerrManager
         // items list should be empty
         Assert.Empty(items);
 
-        // todo: test with actual items
+        // This test covers the empty-library case only.
     }
 
     [Fact]
@@ -1102,7 +1102,8 @@ public class TestThemerrManager
                 downloaded_timestamp = DateTime.UtcNow,
                 theme_md5 = "legacy-md5",
                 youtube_theme_url = "https://www.youtube.com/watch?v=legacy",
-            }));
+            }),
+            TestContext.Current.CancellationToken);
 
         Assert.True(manager.MigrateLegacyThemerrData(item));
         Assert.False(File.Exists(legacyDataPath));
@@ -1142,7 +1143,8 @@ public class TestThemerrManager
                 downloaded_timestamp = DateTime.UtcNow,
                 theme_md5 = "legacy-md5",
                 youtube_theme_url = youtubeThemeUrl,
-            }));
+            }),
+            TestContext.Current.CancellationToken);
 
         var syncedItems = await manager.SyncLibraryItems();
 
@@ -1193,7 +1195,8 @@ public class TestThemerrManager
                 downloaded_timestamp = DateTime.UtcNow,
                 theme_md5 = "legacy-md5",
                 youtube_theme_url = youtubeThemeUrl,
-            }));
+            }),
+            TestContext.Current.CancellationToken);
 
         repository.Save(
             item,
@@ -1277,7 +1280,8 @@ public class TestThemerrManager
                 downloaded_timestamp = DateTime.UtcNow,
                 theme_md5 = "legacy-md5",
                 youtube_theme_url = youtubeThemeUrl,
-            }));
+            }),
+            TestContext.Current.CancellationToken);
 
         repository.Save(
             item,
@@ -1295,7 +1299,7 @@ public class TestThemerrManager
             var mediaItem = Assert.Single(context.MediaItems);
             mediaItem.ItemPath = legacyMediaPath;
             mediaItem.ThemePath = legacyThemePath;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
         }
 
         var syncedItem = await manager.SyncLibraryItem(item);
@@ -2363,7 +2367,7 @@ public class TestThemerrManager
         try
         {
             manager.StartInitialMigrationUpdate();
-            await requestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await requestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
             var syncedItemsTask = manager.SyncLibraryItems();
             Assert.False(syncedItemsTask.IsCompleted);
@@ -2406,7 +2410,7 @@ public class TestThemerrManager
         manager.StartInitialMigrationUpdate();
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => manager.SyncLibraryItems());
-        await Task.Delay(100);
+        await Task.Delay(100, TestContext.Current.CancellationToken);
     }
 
     [Fact]
