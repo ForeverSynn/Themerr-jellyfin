@@ -2360,7 +2360,7 @@ public class TestThemerrManager
 
         Assert.False(result);
         Assert.False(File.Exists(destination));
-        Assert.False(File.Exists(destination + ".themerr-download.tmp"));
+        Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(destination)!, Path.GetFileName(destination) + ".*.themerr-download.tmp"));
     }
 
     [Fact]

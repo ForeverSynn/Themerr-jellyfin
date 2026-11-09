@@ -190,7 +190,8 @@ namespace Jellyfin.Plugin.Themerr
             // Download next to the destination and move it into place only once a file was
             // actually written, so a video with no audio stream never counts as a download
             // and never touches a theme that is already there.
-            var tempPath = destination + ".themerr-download.tmp";
+            // Unique per call: two overlapping saves of the same theme never share a temp file.
+            var tempPath = destination + "." + Guid.NewGuid().ToString("N") + ".themerr-download.tmp";
             try
             {
                 if (File.Exists(tempPath))
