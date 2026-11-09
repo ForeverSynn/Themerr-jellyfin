@@ -2326,6 +2326,44 @@ public class TestThemerrManager
 
     [Fact]
     [Trait("Category", "Unit")]
+    private void TestSaveThemerrDataMissingFileWritesNothing()
+    {
+        var repository = CreateThemerrRepository();
+        var manager = CreateThemerrManager(repository);
+        var item = CreateMovie("missing-theme-file");
+        var missingPath = Path.Combine(Path.GetTempPath(), "missing_" + Guid.NewGuid() + ".mp3");
+
+        var result = manager.SaveThemerrData(item, missingPath, "https://www.youtube.com/watch?v=test");
+
+        Assert.False(result);
+        Assert.Null(repository.Get(item, missingPath));
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    private async Task TestSaveMp3NoAudioStreamReturnsFalse()
+    {
+        Mock<ILogger<ThemerrManager>> mockLogger = new();
+        var mockYoutubeClient = new Mock<IYoutubeClientWrapper>();
+        mockYoutubeClient
+            .Setup(y => y.DownloadAudioAsync(It.IsAny<string>(), It.IsAny<string>()))
+            .Returns(Task.CompletedTask);
+        var manager = new ThemerrManager(
+            TestHelper.GetMockApplicationPaths().Object,
+            new Mock<ILibraryManager>().Object,
+            mockLogger.Object,
+            mockYoutubeClient.Object,
+            httpClient: CreateThemerrDbHttpClient());
+        var destination = Path.Combine(Path.GetTempPath(), "no_stream_" + Guid.NewGuid() + ".mp3");
+
+        var result = await manager.SaveMp3(destination, "https://www.youtube.com/watch?v=test");
+
+        Assert.False(result);
+        Assert.False(File.Exists(destination));
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
     private void TestOnTimerElapsed()
     {
         var manager = CreateThemerrManager();

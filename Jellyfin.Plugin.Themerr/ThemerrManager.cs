@@ -190,6 +190,13 @@ namespace Jellyfin.Plugin.Themerr
             try
             {
                 await _youtubeClientWrapper.DownloadAudioAsync(videoUrl, destination);
+                if (!File.Exists(destination))
+                {
+                    // YouTube returned no audio stream, so nothing was written.
+                    _logger.LogWarning("No audio stream downloaded from {VideoUrl}; {Destination} was not created", videoUrl, destination);
+                    return false;
+                }
+
                 return true;
             }
             catch (Exception e)
@@ -576,6 +583,13 @@ namespace Jellyfin.Plugin.Themerr
         /// <returns>True if the data was saved successfully, false otherwise.</returns>
         public bool SaveThemerrData(BaseItem item, string themePath, string youtubeThemeUrl)
         {
+            if (string.IsNullOrEmpty(themePath) || !File.Exists(themePath))
+            {
+                // No theme file, so there is nothing to hash and nothing to record.
+                _logger.LogWarning("Theme file {ThemePath} does not exist; not saving themerr data for {ItemName}", themePath, item.Name);
+                return false;
+            }
+
             try
             {
                 var timestampUtc = DateTime.UtcNow;
