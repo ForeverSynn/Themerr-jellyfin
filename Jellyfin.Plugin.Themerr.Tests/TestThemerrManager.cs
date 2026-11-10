@@ -2365,6 +2365,34 @@ public class TestThemerrManager
 
     [Fact]
     [Trait("Category", "Unit")]
+    private async Task TestSaveMp3PartialDownloadFailureCleansUp()
+    {
+        Mock<ILogger<ThemerrManager>> mockLogger = new();
+        var mockYoutubeClient = new Mock<IYoutubeClientWrapper>();
+        mockYoutubeClient
+            .Setup(y => y.DownloadAudioAsync(It.IsAny<string>(), It.IsAny<string>()))
+            .Returns<string, string>(async (_, tempDestination) =>
+            {
+                await File.WriteAllTextAsync(tempDestination, "partial");
+                throw new IOException("Simulated broken download");
+            });
+        var manager = new ThemerrManager(
+            TestHelper.GetMockApplicationPaths().Object,
+            new Mock<ILibraryManager>().Object,
+            mockLogger.Object,
+            mockYoutubeClient.Object,
+            httpClient: CreateThemerrDbHttpClient());
+        var destination = Path.Combine(Path.GetTempPath(), "partial_" + Guid.NewGuid() + ".mp3");
+
+        var result = await manager.SaveMp3(destination, "https://www.youtube.com/watch?v=test");
+
+        Assert.False(result);
+        Assert.False(File.Exists(destination));
+        Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(destination)!, Path.GetFileName(destination) + ".*.themerr-download.tmp"));
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
     private async Task TestSaveMp3NoAudioStreamKeepsExistingTheme()
     {
         Mock<ILogger<ThemerrManager>> mockLogger = new();
