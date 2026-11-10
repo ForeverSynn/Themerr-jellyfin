@@ -187,15 +187,47 @@ namespace Jellyfin.Plugin.Themerr
         /// <returns>True if the file was saved successfully, false otherwise.</returns>
         public async Task<bool> SaveMp3(string destination, string videoUrl)
         {
+            // Download next to the destination and move it into place only once a file was
+            // actually written, so a video with no audio stream never counts as a download
+            // and never touches a theme that is already there.
+            // Unique per call: two overlapping saves of the same theme never share a temp file.
+            var tempPath = destination + "." + Guid.NewGuid().ToString("N") + ".themerr-download.tmp";
             try
             {
-                await _youtubeClientWrapper.DownloadAudioAsync(videoUrl, destination);
+                if (File.Exists(tempPath))
+                {
+                    File.Delete(tempPath);
+                }
+
+                await _youtubeClientWrapper.DownloadAudioAsync(videoUrl, tempPath);
+                if (!File.Exists(tempPath))
+                {
+                    // YouTube returned no audio stream, so nothing was written.
+                    _logger.LogWarning("No audio stream downloaded from {VideoUrl}; {Destination} was left unchanged", videoUrl, destination);
+                    return false;
+                }
+
+                File.Move(tempPath, destination, overwrite: true);
                 return true;
             }
             catch (Exception e)
             {
                 _logger.LogError(e, "Unable to download {VideoUrl} to {Destination}", videoUrl, destination);
                 return false;
+            }
+            finally
+            {
+                try
+                {
+                    if (File.Exists(tempPath))
+                    {
+                        File.Delete(tempPath);
+                    }
+                }
+                catch (IOException e)
+                {
+                    _logger.LogWarning(e, "Unable to remove temporary download {TempPath}", tempPath);
+                }
             }
         }
 
@@ -576,6 +608,13 @@ namespace Jellyfin.Plugin.Themerr
         /// <returns>True if the data was saved successfully, false otherwise.</returns>
         public bool SaveThemerrData(BaseItem item, string themePath, string youtubeThemeUrl)
         {
+            if (string.IsNullOrEmpty(themePath) || !File.Exists(themePath))
+            {
+                // No theme file, so there is nothing to hash and nothing to record.
+                _logger.LogWarning("Theme file {ThemePath} does not exist; not saving themerr data for {ItemName}", themePath, item.Name);
+                return false;
+            }
+
             try
             {
                 var timestampUtc = DateTime.UtcNow;
