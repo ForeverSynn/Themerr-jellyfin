@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
@@ -19,7 +20,7 @@ namespace Jellyfin.Plugin.Themerr.Storage
         private readonly string _databasePath;
         private readonly ThemerrDatabaseMigrator _databaseMigrator;
         private readonly ILogger _logger;
-        private readonly object _migrationLock = new object();
+        private readonly Lock _migrationLock = new Lock();
         private bool _databaseCreatedDuringMigration;
         private bool _migrationsApplied;
 

@@ -587,7 +587,7 @@ VALUES (
     {
         var repository = CreateRepository();
         var repositoryType = typeof(ThemerrRepository);
-        var migrationLock = repositoryType
+        var migrationLock = (Lock)repositoryType
             .GetField("_migrationLock", BindingFlags.NonPublic | BindingFlags.Instance)!
             .GetValue(repository)!;
         var migrationsApplied = repositoryType

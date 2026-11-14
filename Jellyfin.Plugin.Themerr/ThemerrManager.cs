@@ -27,7 +27,7 @@ namespace Jellyfin.Plugin.Themerr
     public class ThemerrManager : IDisposable
     {
         private static readonly TimeSpan ThemerrDbCacheDuration = TimeSpan.FromHours(24);
-        private static readonly object InitialUpdateLock = new object();
+        private static readonly Lock InitialUpdateLock = new Lock();
 
         private static readonly Dictionary<string, Task> InitialUpdateTasks =
             new Dictionary<string, Task>(StringComparer.OrdinalIgnoreCase);
@@ -405,7 +405,7 @@ namespace Jellyfin.Plugin.Themerr
                 return;
             }
 
-            SaveThemerrData(item, themePath, youtubeThemeUrl);
+            SaveThemerrData(item, themePath, youtubeThemeUrl, availability.CheckedUtc);
             try
             {
                 await item.RefreshMetadata(CancellationToken.None).ConfigureAwait(false);
@@ -497,11 +497,13 @@ namespace Jellyfin.Plugin.Themerr
 
             // Always fetch the latest URL from ThemerrDB (null bypasses the 24h cache)
             string youtubeThemeUrl = null;
+            DateTime? themerrDbCheckedUtc = null;
             var dbType = ThemerrDbType.Get(item);
             if (!string.IsNullOrEmpty(dbType))
             {
                 var availability = await GetThemerrDbAvailability(item, dbType, null).ConfigureAwait(false);
                 youtubeThemeUrl = availability.YoutubeThemeUrl;
+                themerrDbCheckedUtc = availability.CheckedUtc;
             }
 
             // Fall back to stored URL when ThemerrDB has no entry or is unreachable
@@ -539,7 +541,7 @@ namespace Jellyfin.Plugin.Themerr
             }
 
             _logger.LogInformation("ReplaceWithThemerrTheme: Saving Themerr Data for {ItemName}", item.Name);
-            SaveThemerrData(item, themePath, youtubeThemeUrl);
+            SaveThemerrData(item, themePath, youtubeThemeUrl, themerrDbCheckedUtc);
 
             try
             {
@@ -571,32 +573,11 @@ namespace Jellyfin.Plugin.Themerr
         /// </summary>
         /// <param name="themerrDbUrl">The themerr database url.</param>
         /// <param name="item">The Jellyfin media object.</param>
-        /// <returns>The YouTube theme url.</returns>
+        /// <returns>The YouTube theme url, or an empty string when there is none or ThemerrDB could not be read.</returns>
         public async Task<string> GetYoutubeThemeUrl(string themerrDbUrl, BaseItem item)
         {
-            HttpResponseMessage response;
-
-            try
-            {
-                response = await _httpClient.GetAsync(themerrDbUrl).ConfigureAwait(false);
-            }
-            catch (Exception e)
-            {
-                _logger.LogError(e, "Error retrieving from ThemerrDB: {ItemName}", item.Name);
-                return string.Empty;
-            }
-
-            if (response.StatusCode == HttpStatusCode.NotFound)
-            {
-                _logger.LogWarning(
-                    "ThemerrDB entry not found (404): {ItemName}, contribute:\n  {IssueUrl}",
-                    item.Name,
-                    GetIssueUrl(item));
-                return string.Empty;
-            }
-
-            var jsonString = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-            return GetYoutubeThemeUrlFromJson(jsonString);
+            var lookup = await LookupYoutubeThemeUrl(themerrDbUrl, item).ConfigureAwait(false);
+            return lookup.YoutubeThemeUrl ?? string.Empty;
         }
 
         /// <summary>
@@ -608,37 +589,7 @@ namespace Jellyfin.Plugin.Themerr
         /// <returns>True if the data was saved successfully, false otherwise.</returns>
         public bool SaveThemerrData(BaseItem item, string themePath, string youtubeThemeUrl)
         {
-            if (string.IsNullOrEmpty(themePath) || !File.Exists(themePath))
-            {
-                // No theme file, so there is nothing to hash and nothing to record.
-                _logger.LogWarning("Theme file {ThemePath} does not exist; not saving themerr data for {ItemName}", themePath, item.Name);
-                return false;
-            }
-
-            try
-            {
-                var timestampUtc = DateTime.UtcNow;
-                _themerrRepository.Save(
-                    item,
-                    new ThemerrMediaItemSaveOptions
-                    {
-                        ThemePath = themePath,
-                        ThemeHash = GetThemeHash(themePath),
-                        ThemeHashAlgorithm = ThemerrThemeHasher.CurrentAlgorithm,
-                        YoutubeThemeUrl = youtubeThemeUrl,
-                        DownloadedTimestampUtc = timestampUtc,
-                        ThemeProvider = ThemerrThemeProvider.Themerr,
-                        InThemerrDb = true,
-                        InThemerrDbCheckedUtc = timestampUtc,
-                        IssueUrl = GetIssueUrl(item),
-                    });
-                return true;
-            }
-            catch (Exception e)
-            {
-                _logger.LogError(e, "Unable to save themerr data to sqlite database");
-                return false;
-            }
+            return SaveThemerrData(item, themePath, youtubeThemeUrl, DateTime.UtcNow);
         }
 
         /// <summary>
@@ -730,6 +681,49 @@ namespace Jellyfin.Plugin.Themerr
                     StringComparison.OrdinalIgnoreCase);
         }
 
+        private static bool IsMatchingMediaDirectory(BaseItem item, string directory)
+        {
+            static string NormalizeMediaName(string value)
+            {
+                if (string.IsNullOrEmpty(value))
+                {
+                    return string.Empty;
+                }
+
+                return new string(value.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
+            }
+
+            var directoryName = System.IO.Path.GetFileName(directory);
+            var normalizedDirectoryName = NormalizeMediaName(directoryName);
+            var normalizedItemName = NormalizeMediaName(item.Name);
+
+            if (string.IsNullOrEmpty(normalizedDirectoryName) ||
+                string.IsNullOrEmpty(normalizedItemName) ||
+                !normalizedDirectoryName.Contains(normalizedItemName, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return item.ProductionYear == null ||
+                normalizedDirectoryName.Contains(item.ProductionYear.ToString(), StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void AddThemerrDataPathFromMatchingChildDirectory(
+            List<string> paths,
+            BaseItem item,
+            string rootDirectory)
+        {
+            if (string.IsNullOrEmpty(rootDirectory) || !System.IO.Directory.Exists(rootDirectory))
+            {
+                return;
+            }
+
+            paths.AddRange(
+                System.IO.Directory.EnumerateDirectories(rootDirectory)
+                    .Where(directory => IsMatchingMediaDirectory(item, directory))
+                    .Select(directory => System.IO.Path.Combine(directory, "themerr.json")));
+        }
+
         /// <summary>
         /// Called when the plugin is loaded.
         /// </summary>
@@ -739,11 +733,57 @@ namespace Jellyfin.Plugin.Themerr
             _timer.Change(Timeout.Infinite, Timeout.Infinite);
         }
 
+        private bool SaveThemerrData(
+            BaseItem item,
+            string themePath,
+            string youtubeThemeUrl,
+            DateTime? inThemerrDbCheckedUtc)
+        {
+            if (string.IsNullOrEmpty(themePath) || !File.Exists(themePath))
+            {
+                // No theme file, so there is nothing to hash and nothing to record.
+                _logger.LogWarning("Theme file {ThemePath} does not exist; not saving themerr data for {ItemName}", themePath, item.Name);
+                return false;
+            }
+
+            try
+            {
+                var timestampUtc = DateTime.UtcNow;
+                _themerrRepository.Save(
+                    item,
+                    new ThemerrMediaItemSaveOptions
+                    {
+                        ThemePath = themePath,
+                        ThemeHash = GetThemeHash(themePath),
+                        ThemeHashAlgorithm = ThemerrThemeHasher.CurrentAlgorithm,
+                        YoutubeThemeUrl = youtubeThemeUrl,
+                        DownloadedTimestampUtc = timestampUtc,
+                        ThemeProvider = ThemerrThemeProvider.Themerr,
+                        InThemerrDb = true,
+                        InThemerrDbCheckedUtc = inThemerrDbCheckedUtc,
+                        IssueUrl = GetIssueUrl(item),
+                    });
+                return true;
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Unable to save themerr data to sqlite database");
+                return false;
+            }
+        }
+
         private async Task UpdateAllCore()
         {
             foreach (var item in GetTmdbItemsFromLibrary())
             {
-                await ProcessItemTheme(item).ConfigureAwait(false);
+                try
+                {
+                    await ProcessItemTheme(item).ConfigureAwait(false);
+                }
+                catch (Exception e) when (e is not OperationCanceledException)
+                {
+                    _logger?.LogError(e, "Failed to update the theme song for {ItemName}; continuing with the next item", item.Name);
+                }
             }
         }
 
@@ -809,9 +849,9 @@ namespace Jellyfin.Plugin.Themerr
             BaseItem item,
             string themePath,
             ThemerrMediaItem existingData,
-            bool inThemerrDb,
+            bool? inThemerrDb,
             string youtubeThemeUrl,
-            DateTime inThemerrDbCheckedUtc)
+            DateTime? inThemerrDbCheckedUtc)
         {
             var existingThemePath = GetExistingThemePath(item, themePath);
             var themeProvider = GetCurrentThemeProvider(existingThemePath, existingData);
@@ -836,6 +876,56 @@ namespace Jellyfin.Plugin.Themerr
                     InThemerrDbCheckedUtc = inThemerrDbCheckedUtc,
                     IssueUrl = GetIssueUrl(item),
                 });
+        }
+
+        /// <summary>
+        /// Look up the YouTube theme url in ThemerrDB.
+        /// A request, HTTP status or parse failure is logged and reported as a failed lookup,
+        /// so one bad response never stops a whole library run.
+        /// </summary>
+        /// <param name="themerrDbUrl">The themerr database url.</param>
+        /// <param name="item">The Jellyfin media object.</param>
+        /// <returns>The lookup result.</returns>
+        private async Task<ThemerrDbLookup> LookupYoutubeThemeUrl(string themerrDbUrl, BaseItem item)
+        {
+            try
+            {
+                using var response = await _httpClient.GetAsync(themerrDbUrl).ConfigureAwait(false);
+
+                if (response.StatusCode == HttpStatusCode.NotFound)
+                {
+                    _logger?.LogWarning(
+                        "ThemerrDB entry not found (404): {ItemName}, contribute:\n  {IssueUrl}",
+                        item.Name,
+                        GetIssueUrl(item));
+                    return ThemerrDbLookup.Found(string.Empty);
+                }
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger?.LogWarning(
+                        "ThemerrDB returned HTTP {StatusCode} for {ItemName}; skipping it this run",
+                        (int)response.StatusCode,
+                        item.Name);
+                    return ThemerrDbLookup.Failed;
+                }
+
+                var jsonString = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                return ThemerrDbLookup.Found(GetYoutubeThemeUrlFromJson(jsonString) ?? string.Empty);
+            }
+            catch (Exception e) when (e is JsonException || e is InvalidCastException || e is FormatException)
+            {
+                _logger?.LogWarning(
+                    e,
+                    "ThemerrDB returned a response that is not valid JSON for {ItemName}; skipping it this run",
+                    item.Name);
+                return ThemerrDbLookup.Failed;
+            }
+            catch (Exception e)
+            {
+                _logger?.LogError(e, "Error retrieving from ThemerrDB: {ItemName}", item.Name);
+                return ThemerrDbLookup.Failed;
+            }
         }
 
         private async Task<ThemerrDbAvailability> GetThemerrDbAvailability(
@@ -866,7 +956,19 @@ namespace Jellyfin.Plugin.Themerr
             }
 
             var themerrDbUrl = CreateThemerrDbLink(tmdbId, dbType);
-            var youtubeThemeUrl = await GetYoutubeThemeUrl(themerrDbUrl, item).ConfigureAwait(false);
+            var lookup = await LookupYoutubeThemeUrl(themerrDbUrl, item).ConfigureAwait(false);
+            if (!lookup.Succeeded)
+            {
+                // keep the stored availability and its old check time, so the next run retries
+                return new ThemerrDbAvailability
+                {
+                    InThemerrDb = existingData?.InThemerrDb,
+                    YoutubeThemeUrl = existingData?.InThemerrDb == true ? existingData.YoutubeThemeUrl : null,
+                    CheckedUtc = null,
+                };
+            }
+
+            var youtubeThemeUrl = lookup.YoutubeThemeUrl;
             return new ThemerrDbAvailability
             {
                 InThemerrDb = !string.IsNullOrEmpty(youtubeThemeUrl),
@@ -909,7 +1011,7 @@ namespace Jellyfin.Plugin.Themerr
             string themePath,
             ThemerrMediaItem existingData)
         {
-            void AddThemerrDataPathFromPath(List<string> pathList, string candidatePath)
+            static void AddThemerrDataPathFromPath(List<string> pathList, string candidatePath)
             {
                 var directory = GetDirectoryCandidate(candidatePath);
                 if (string.IsNullOrEmpty(directory))
@@ -959,49 +1061,6 @@ namespace Jellyfin.Plugin.Themerr
                 .Distinct(StringComparer.OrdinalIgnoreCase);
         }
 
-        private void AddThemerrDataPathFromMatchingChildDirectory(
-            List<string> paths,
-            BaseItem item,
-            string rootDirectory)
-        {
-            if (string.IsNullOrEmpty(rootDirectory) || !System.IO.Directory.Exists(rootDirectory))
-            {
-                return;
-            }
-
-            paths.AddRange(
-                System.IO.Directory.EnumerateDirectories(rootDirectory)
-                    .Where(directory => IsMatchingMediaDirectory(item, directory))
-                    .Select(directory => System.IO.Path.Combine(directory, "themerr.json")));
-        }
-
-        private bool IsMatchingMediaDirectory(BaseItem item, string directory)
-        {
-            string NormalizeMediaName(string value)
-            {
-                if (string.IsNullOrEmpty(value))
-                {
-                    return string.Empty;
-                }
-
-                return new string(value.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
-            }
-
-            var directoryName = System.IO.Path.GetFileName(directory);
-            var normalizedDirectoryName = NormalizeMediaName(directoryName);
-            var normalizedItemName = NormalizeMediaName(item.Name);
-
-            if (string.IsNullOrEmpty(normalizedDirectoryName) ||
-                string.IsNullOrEmpty(normalizedItemName) ||
-                !normalizedDirectoryName.Contains(normalizedItemName, StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
-
-            return item.ProductionYear == null ||
-                normalizedDirectoryName.Contains(item.ProductionYear.ToString(), StringComparison.OrdinalIgnoreCase);
-        }
-
         /// <summary>
         /// Stores cached ThemerrDB availability for a media item.
         /// </summary>
@@ -1010,7 +1069,7 @@ namespace Jellyfin.Plugin.Themerr
             /// <summary>
             /// Gets or sets a value indicating whether ThemerrDB has a theme for this item.
             /// </summary>
-            public bool InThemerrDb { get; set; }
+            public bool? InThemerrDb { get; set; }
 
             /// <summary>
             /// Gets or sets the ThemerrDB YouTube theme url.
@@ -1018,9 +1077,44 @@ namespace Jellyfin.Plugin.Themerr
             public string YoutubeThemeUrl { get; set; }
 
             /// <summary>
-            /// Gets or sets when ThemerrDB availability was checked.
+            /// Gets or sets when ThemerrDB availability was checked; null keeps the stored check time.
             /// </summary>
-            public DateTime CheckedUtc { get; set; }
+            public DateTime? CheckedUtc { get; set; }
+        }
+
+        /// <summary>
+        /// The result of one ThemerrDB lookup.
+        /// </summary>
+        private sealed class ThemerrDbLookup
+        {
+            /// <summary>
+            /// A lookup that failed (request, HTTP status or parse error).
+            /// </summary>
+            public static readonly ThemerrDbLookup Failed = new ThemerrDbLookup();
+
+            /// <summary>
+            /// Gets a value indicating whether ThemerrDB answered with a usable response.
+            /// </summary>
+            public bool Succeeded { get; private init; }
+
+            /// <summary>
+            /// Gets the YouTube theme url; empty when ThemerrDB has none, null when the lookup failed.
+            /// </summary>
+            public string YoutubeThemeUrl { get; private init; }
+
+            /// <summary>
+            /// Create a successful lookup result.
+            /// </summary>
+            /// <param name="youtubeThemeUrl">The YouTube theme url, or an empty string.</param>
+            /// <returns>The lookup result.</returns>
+            public static ThemerrDbLookup Found(string youtubeThemeUrl)
+            {
+                return new ThemerrDbLookup
+                {
+                    Succeeded = true,
+                    YoutubeThemeUrl = youtubeThemeUrl,
+                };
+            }
         }
     }
 }
