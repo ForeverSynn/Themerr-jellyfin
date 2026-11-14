@@ -1689,6 +1689,52 @@ public class TestThemerrManager
 
     [Fact]
     [Trait("Category", "Unit")]
+    private async Task TestProcessItemThemeHtmlResponseKeepsCheckTimeAfterCachedDownload()
+    {
+        var item = CreateMovie("html-cached-download");
+        item.Path = Path.Combine(CreateTempDirectory(), "Html Cached Download (1970).mp4");
+        var themePath = ThemerrManager.GetThemePath(item);
+        var expiredCheckUtc = DateTime.UtcNow.AddDays(-3);
+        var repository = CreateThemerrRepository();
+        repository.Save(
+            item,
+            new ThemerrMediaItemSaveOptions
+            {
+                ThemePath = themePath,
+                YoutubeThemeUrl = "https://www.youtube.com/watch?v=cached-download",
+                InThemerrDb = true,
+                InThemerrDbCheckedUtc = expiredCheckUtc,
+            });
+        repository = ReopenThemerrRepository(repository);
+        var httpClient = CreateThemerrDbHttpClient(
+            sendAsync: (_, _) => Task.FromResult(CreateHtmlResponse(HttpStatusCode.OK)));
+        var manager = CreateThemerrManager(
+            repository,
+            youtubeClientWrapper: CreateMockYoutubeClientWrapper(),
+            httpClient: httpClient);
+
+        try
+        {
+            await manager.ProcessItemTheme(item);
+
+            Assert.True(File.Exists(themePath));
+            var saved = repository.Get(item, themePath);
+            Assert.NotNull(saved);
+            Assert.NotNull(saved.DownloadedTimestampUtc);
+            Assert.NotNull(saved.InThemerrDbCheckedUtc);
+            Assert.True(saved.InThemerrDbCheckedUtc.Value < DateTime.UtcNow.AddDays(-2));
+        }
+        finally
+        {
+            if (File.Exists(themePath))
+            {
+                File.Delete(themePath);
+            }
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
     private async Task TestUpdateAllContinuesAfterItemFailures()
     {
         var seedRepository = CreateThemerrRepository();

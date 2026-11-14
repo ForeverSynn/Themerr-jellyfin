@@ -405,7 +405,7 @@ namespace Jellyfin.Plugin.Themerr
                 return;
             }
 
-            SaveThemerrData(item, themePath, youtubeThemeUrl);
+            SaveThemerrData(item, themePath, youtubeThemeUrl, availability.CheckedUtc);
             try
             {
                 await item.RefreshMetadata(CancellationToken.None).ConfigureAwait(false);
@@ -497,11 +497,13 @@ namespace Jellyfin.Plugin.Themerr
 
             // Always fetch the latest URL from ThemerrDB (null bypasses the 24h cache)
             string youtubeThemeUrl = null;
+            DateTime? themerrDbCheckedUtc = null;
             var dbType = ThemerrDbType.Get(item);
             if (!string.IsNullOrEmpty(dbType))
             {
                 var availability = await GetThemerrDbAvailability(item, dbType, null).ConfigureAwait(false);
                 youtubeThemeUrl = availability.YoutubeThemeUrl;
+                themerrDbCheckedUtc = availability.CheckedUtc;
             }
 
             // Fall back to stored URL when ThemerrDB has no entry or is unreachable
@@ -539,7 +541,7 @@ namespace Jellyfin.Plugin.Themerr
             }
 
             _logger.LogInformation("ReplaceWithThemerrTheme: Saving Themerr Data for {ItemName}", item.Name);
-            SaveThemerrData(item, themePath, youtubeThemeUrl);
+            SaveThemerrData(item, themePath, youtubeThemeUrl, themerrDbCheckedUtc);
 
             try
             {
@@ -587,37 +589,7 @@ namespace Jellyfin.Plugin.Themerr
         /// <returns>True if the data was saved successfully, false otherwise.</returns>
         public bool SaveThemerrData(BaseItem item, string themePath, string youtubeThemeUrl)
         {
-            if (string.IsNullOrEmpty(themePath) || !File.Exists(themePath))
-            {
-                // No theme file, so there is nothing to hash and nothing to record.
-                _logger.LogWarning("Theme file {ThemePath} does not exist; not saving themerr data for {ItemName}", themePath, item.Name);
-                return false;
-            }
-
-            try
-            {
-                var timestampUtc = DateTime.UtcNow;
-                _themerrRepository.Save(
-                    item,
-                    new ThemerrMediaItemSaveOptions
-                    {
-                        ThemePath = themePath,
-                        ThemeHash = GetThemeHash(themePath),
-                        ThemeHashAlgorithm = ThemerrThemeHasher.CurrentAlgorithm,
-                        YoutubeThemeUrl = youtubeThemeUrl,
-                        DownloadedTimestampUtc = timestampUtc,
-                        ThemeProvider = ThemerrThemeProvider.Themerr,
-                        InThemerrDb = true,
-                        InThemerrDbCheckedUtc = timestampUtc,
-                        IssueUrl = GetIssueUrl(item),
-                    });
-                return true;
-            }
-            catch (Exception e)
-            {
-                _logger.LogError(e, "Unable to save themerr data to sqlite database");
-                return false;
-            }
+            return SaveThemerrData(item, themePath, youtubeThemeUrl, DateTime.UtcNow);
         }
 
         /// <summary>
@@ -759,6 +731,45 @@ namespace Jellyfin.Plugin.Themerr
         {
             // Stop the timer until next update
             _timer.Change(Timeout.Infinite, Timeout.Infinite);
+        }
+
+        private bool SaveThemerrData(
+            BaseItem item,
+            string themePath,
+            string youtubeThemeUrl,
+            DateTime? inThemerrDbCheckedUtc)
+        {
+            if (string.IsNullOrEmpty(themePath) || !File.Exists(themePath))
+            {
+                // No theme file, so there is nothing to hash and nothing to record.
+                _logger.LogWarning("Theme file {ThemePath} does not exist; not saving themerr data for {ItemName}", themePath, item.Name);
+                return false;
+            }
+
+            try
+            {
+                var timestampUtc = DateTime.UtcNow;
+                _themerrRepository.Save(
+                    item,
+                    new ThemerrMediaItemSaveOptions
+                    {
+                        ThemePath = themePath,
+                        ThemeHash = GetThemeHash(themePath),
+                        ThemeHashAlgorithm = ThemerrThemeHasher.CurrentAlgorithm,
+                        YoutubeThemeUrl = youtubeThemeUrl,
+                        DownloadedTimestampUtc = timestampUtc,
+                        ThemeProvider = ThemerrThemeProvider.Themerr,
+                        InThemerrDb = true,
+                        InThemerrDbCheckedUtc = inThemerrDbCheckedUtc,
+                        IssueUrl = GetIssueUrl(item),
+                    });
+                return true;
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Unable to save themerr data to sqlite database");
+                return false;
+            }
         }
 
         private async Task UpdateAllCore()
