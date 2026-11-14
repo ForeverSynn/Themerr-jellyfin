@@ -27,7 +27,7 @@ namespace Jellyfin.Plugin.Themerr
     public class ThemerrManager : IDisposable
     {
         private static readonly TimeSpan ThemerrDbCacheDuration = TimeSpan.FromHours(24);
-        private static readonly object InitialUpdateLock = new object();
+        private static readonly Lock InitialUpdateLock = new Lock();
 
         private static readonly Dictionary<string, Task> InitialUpdateTasks =
             new Dictionary<string, Task>(StringComparer.OrdinalIgnoreCase);
@@ -709,6 +709,49 @@ namespace Jellyfin.Plugin.Themerr
                     StringComparison.OrdinalIgnoreCase);
         }
 
+        private static bool IsMatchingMediaDirectory(BaseItem item, string directory)
+        {
+            static string NormalizeMediaName(string value)
+            {
+                if (string.IsNullOrEmpty(value))
+                {
+                    return string.Empty;
+                }
+
+                return new string(value.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
+            }
+
+            var directoryName = System.IO.Path.GetFileName(directory);
+            var normalizedDirectoryName = NormalizeMediaName(directoryName);
+            var normalizedItemName = NormalizeMediaName(item.Name);
+
+            if (string.IsNullOrEmpty(normalizedDirectoryName) ||
+                string.IsNullOrEmpty(normalizedItemName) ||
+                !normalizedDirectoryName.Contains(normalizedItemName, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return item.ProductionYear == null ||
+                normalizedDirectoryName.Contains(item.ProductionYear.ToString(), StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void AddThemerrDataPathFromMatchingChildDirectory(
+            List<string> paths,
+            BaseItem item,
+            string rootDirectory)
+        {
+            if (string.IsNullOrEmpty(rootDirectory) || !System.IO.Directory.Exists(rootDirectory))
+            {
+                return;
+            }
+
+            paths.AddRange(
+                System.IO.Directory.EnumerateDirectories(rootDirectory)
+                    .Where(directory => IsMatchingMediaDirectory(item, directory))
+                    .Select(directory => System.IO.Path.Combine(directory, "themerr.json")));
+        }
+
         /// <summary>
         /// Called when the plugin is loaded.
         /// </summary>
@@ -957,7 +1000,7 @@ namespace Jellyfin.Plugin.Themerr
             string themePath,
             ThemerrMediaItem existingData)
         {
-            void AddThemerrDataPathFromPath(List<string> pathList, string candidatePath)
+            static void AddThemerrDataPathFromPath(List<string> pathList, string candidatePath)
             {
                 var directory = GetDirectoryCandidate(candidatePath);
                 if (string.IsNullOrEmpty(directory))
@@ -1005,49 +1048,6 @@ namespace Jellyfin.Plugin.Themerr
             return paths
                 .Where(path => !string.IsNullOrEmpty(path))
                 .Distinct(StringComparer.OrdinalIgnoreCase);
-        }
-
-        private void AddThemerrDataPathFromMatchingChildDirectory(
-            List<string> paths,
-            BaseItem item,
-            string rootDirectory)
-        {
-            if (string.IsNullOrEmpty(rootDirectory) || !System.IO.Directory.Exists(rootDirectory))
-            {
-                return;
-            }
-
-            paths.AddRange(
-                System.IO.Directory.EnumerateDirectories(rootDirectory)
-                    .Where(directory => IsMatchingMediaDirectory(item, directory))
-                    .Select(directory => System.IO.Path.Combine(directory, "themerr.json")));
-        }
-
-        private bool IsMatchingMediaDirectory(BaseItem item, string directory)
-        {
-            string NormalizeMediaName(string value)
-            {
-                if (string.IsNullOrEmpty(value))
-                {
-                    return string.Empty;
-                }
-
-                return new string(value.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
-            }
-
-            var directoryName = System.IO.Path.GetFileName(directory);
-            var normalizedDirectoryName = NormalizeMediaName(directoryName);
-            var normalizedItemName = NormalizeMediaName(item.Name);
-
-            if (string.IsNullOrEmpty(normalizedDirectoryName) ||
-                string.IsNullOrEmpty(normalizedItemName) ||
-                !normalizedDirectoryName.Contains(normalizedItemName, StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
-
-            return item.ProductionYear == null ||
-                normalizedDirectoryName.Contains(item.ProductionYear.ToString(), StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>

@@ -2373,7 +2373,7 @@ public class TestThemerrManager
         Directory.CreateDirectory(mismatchedDirectory);
         var method = typeof(ThemerrManager).GetMethod(
             "IsMatchingMediaDirectory",
-            BindingFlags.NonPublic | BindingFlags.Instance);
+            BindingFlags.NonPublic | BindingFlags.Static);
         Assert.NotNull(method);
 
         var emptyNameResult = (bool)method.Invoke(
