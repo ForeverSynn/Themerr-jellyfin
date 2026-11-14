@@ -14,10 +14,10 @@
         "dotnet-sdk",
         "dotnet-runtime",
         "dotnet-aspnetcore",
-        "Microsoft.EntityFrameworkCore{,.**}",
-        "Microsoft.Extensions.**",
-        "Microsoft.AspNetCore.**",
-        "Microsoft.NETCore.**",
+        "Microsoft.EntityFrameworkCore*",
+        "Microsoft.Extensions.*",
+        "Microsoft.AspNetCore.*",
+        "Microsoft.NETCore.*",
         "mcr.microsoft.com/dotnet/**"
       ],
       "enabled": false
