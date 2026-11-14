@@ -3,5 +3,34 @@
   "extends": [
     "local>LizardByte/.github:renovate-config"
   ],
-  "forkProcessing": "enabled"
+  "forkProcessing": "enabled",
+  "packageRules": [
+    {
+      "description": "Jellyfin 12.4 runs on .NET 10: no .NET major updates (SDK, runtime, EF Core, Microsoft.Extensions/AspNetCore, .NET images). They move with a Jellyfin upgrade and the plugin rebuild.",
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "matchPackageNames": [
+        "dotnet-sdk",
+        "dotnet-runtime",
+        "dotnet-aspnetcore",
+        "Microsoft.EntityFrameworkCore{,.**}",
+        "Microsoft.Extensions.**",
+        "Microsoft.AspNetCore.**",
+        "Microsoft.NETCore.**",
+        "mcr.microsoft.com/dotnet/**"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "Same rule for every dotnet-version datasource update (setup-dotnet dotnet-version, global.json).",
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "matchDatasources": [
+        "dotnet-version"
+      ],
+      "enabled": false
+    }
+  ]
 }

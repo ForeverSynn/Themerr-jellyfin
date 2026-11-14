@@ -371,6 +371,17 @@ public class TestThemerrManager
         });
     }
 
+    private static HttpResponseMessage CreateHtmlResponse(HttpStatusCode statusCode)
+    {
+        return new HttpResponseMessage(statusCode)
+        {
+            Content = new StringContent(
+                "<!DOCTYPE html><html><head><title>Error</title></head><body>Unavailable</body></html>",
+                System.Text.Encoding.UTF8,
+                "text/html"),
+        };
+    }
+
     private static string? GetDbTypeForTest(BaseItem item)
     {
         return item switch
@@ -1611,6 +1622,129 @@ public class TestThemerrManager
             item);
 
         Assert.Empty(youtubeThemeUrl);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    private async Task TestGetYoutubeThemeUrlHtmlResponse()
+    {
+        var httpClient = CreateThemerrDbHttpClient(
+            sendAsync: (_, _) => Task.FromResult(CreateHtmlResponse(HttpStatusCode.OK)));
+        var manager = CreateThemerrManager(httpClient: httpClient);
+        var item = CreateMovie("html-response");
+
+        var youtubeThemeUrl = await manager.GetYoutubeThemeUrl(
+            ThemerrManager.CreateThemerrDbLink("html-response", "movies"),
+            item);
+
+        Assert.Empty(youtubeThemeUrl);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    private async Task TestGetYoutubeThemeUrlServerErrorResponse()
+    {
+        var httpClient = CreateThemerrDbHttpClient(
+            sendAsync: (_, _) => Task.FromResult(CreateHtmlResponse(HttpStatusCode.ServiceUnavailable)));
+        var manager = CreateThemerrManager(httpClient: httpClient);
+        var item = CreateMovie("server-error");
+
+        var youtubeThemeUrl = await manager.GetYoutubeThemeUrl(
+            ThemerrManager.CreateThemerrDbLink("server-error", "movies"),
+            item);
+
+        Assert.Empty(youtubeThemeUrl);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    private async Task TestSyncLibraryItemHtmlResponseKeepsCachedAvailability()
+    {
+        var item = CreateMovie("html-keeps-cache");
+        var themePath = ThemerrManager.GetThemePath(item);
+        var expiredCheckUtc = DateTime.UtcNow.AddDays(-3);
+        var repository = CreateThemerrRepository();
+        repository.Save(
+            item,
+            new ThemerrMediaItemSaveOptions
+            {
+                ThemePath = themePath,
+                YoutubeThemeUrl = "https://www.youtube.com/watch?v=cached",
+                InThemerrDb = true,
+                InThemerrDbCheckedUtc = expiredCheckUtc,
+            });
+        repository = ReopenThemerrRepository(repository);
+        var httpClient = CreateThemerrDbHttpClient(
+            sendAsync: (_, _) => Task.FromResult(CreateHtmlResponse(HttpStatusCode.OK)));
+        var manager = CreateThemerrManager(repository, httpClient: httpClient);
+
+        var synced = await manager.SyncLibraryItem(item);
+
+        Assert.NotNull(synced);
+        Assert.True(synced.InThemerrDb);
+        Assert.Equal("https://www.youtube.com/watch?v=cached", synced.YoutubeThemeUrl);
+        Assert.NotNull(synced.InThemerrDbCheckedUtc);
+        Assert.True(synced.InThemerrDbCheckedUtc.Value < DateTime.UtcNow.AddDays(-2));
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    private async Task TestUpdateAllContinuesAfterItemFailures()
+    {
+        var seedRepository = CreateThemerrRepository();
+        seedRepository.MigrateUp();
+        var repository = ReopenThemerrRepository(seedRepository);
+        var htmlItem = CreateMovie("update-all-html");
+        htmlItem.Path = Path.Combine(CreateTempDirectory(), "Update All Html (1970).mp4");
+        var throwingItem = CreateMovie("update-all-throws");
+        throwingItem.Path = Path.Combine(CreateTempDirectory(), "Update All Throws (1970).mp4");
+        var goodItem = CreateMovie("update-all-good");
+        goodItem.Path = Path.Combine(CreateTempDirectory(), "Update All Good (1970).mp4");
+        var goodThemePath = ThemerrManager.GetThemePath(goodItem);
+        var htmlLink = ThemerrManager.CreateThemerrDbLink("update-all-html", "movies");
+        var goodLink = ThemerrManager.CreateThemerrDbLink("update-all-good", "movies");
+        var httpClient = CreateThemerrDbHttpClient(
+            sendAsync: (request, _) =>
+            {
+                var url = request.RequestUri?.ToString();
+                if (url == htmlLink)
+                {
+                    return Task.FromResult(CreateHtmlResponse(HttpStatusCode.OK));
+                }
+
+                if (url == goodLink)
+                {
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(CreateThemerrDbJson("https://www.youtube.com/watch?v=update-all-good")),
+                    });
+                }
+
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+            });
+        var manager = CreateThemerrManager(
+            repository,
+            new List<BaseItem> { htmlItem, throwingItem, goodItem },
+            CreateMockYoutubeClientWrapper(),
+            httpClient,
+            themeSongProvider: item => item == throwingItem
+                ? throw new ArgumentException("Simulated per-item failure")
+                : new List<BaseItem>());
+
+        try
+        {
+            await manager.UpdateAll();
+
+            Assert.True(File.Exists(goodThemePath));
+            Assert.False(File.Exists(ThemerrManager.GetThemePath(htmlItem)));
+        }
+        finally
+        {
+            if (File.Exists(goodThemePath))
+            {
+                File.Delete(goodThemePath);
+            }
+        }
     }
 
     [Theory]
